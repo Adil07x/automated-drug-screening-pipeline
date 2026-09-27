@@ -1,20 +1,67 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pickle
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Logs
+# ============================================================
+# Logs / temporary files
+# ============================================================
 *.log
-
-# Temporary files
 *.tmp
 *.temp
+*.bak
 
+# ============================================================
 # Operating system files
+# ============================================================
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
-# Local environment/secrets
+# ============================================================
+# Local environments / secrets
+# ============================================================
 .env
+.env.*
+!.env.example
+
+# ============================================================
+# Local development / generated caches
+# ============================================================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============================================================
+# SCScore
+# Keep SCScore source/documentation locally, but do not commit
+# the large upstream datasets/checkpoints/model payloads.
+# ============================================================
+external/scscore/data/
+external/scscore/models/example_model/
+external/scscore/models/*/*.data-*
+external/scscore/models/*/*.index
+external/scscore/models/*/*.meta
+external/scscore/models/*/*.pickle
+external/scscore/models/*/*.interactive*
+external/scscore/models/*/model.hist
+external/scscore/models/*/*.summary
+external/scscore/models/*/*.as_numpy.json.gz
+external/scscore/scscore/__pycache__/
+
+# Historical docking artifacts
+# Keep historical docking outputs locally for reference, but do not publish them.
+results/docking/*_docked.pdbqt
+results/ranked/docking_results.csv
+results/ranked/screening_summary.csv
+results/figures/
+
+# Historical preprocessed ligand PDBQT files
+data/processed/ligands/*.pdbqt
+!data/processed/ligands/STI_reference.pdbqt

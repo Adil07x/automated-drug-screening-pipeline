@@ -1,0 +1,21 @@
+experiment_id,ligand_id,compound,mode,affinity_kcal_mol,rmsd_lb,rmsd_ub
+1,6,Oleic acid,1,-7.143,0.0,0.0
+1,6,Oleic acid,2,-7.141,2.105,3.529
+1,6,Oleic acid,3,-6.966,1.236,2.779
+1,6,Oleic acid,4,-6.862,1.739,3.034
+1,6,Oleic acid,5,-6.837,2.13,3.177
+1,6,Oleic acid,6,-6.692,5.954,10.61
+1,6,Oleic acid,7,-6.631,5.685,10.2
+1,6,Oleic acid,8,-6.629,6.399,11.03
+1,6,Oleic acid,9,-6.56,1.693,2.823
+1,6,Oleic acid,10,-6.504,3.378,5.472
+2,8,Quinic acid,1,-5.967,0.0,0.0
+2,8,Quinic acid,2,-5.915,2.268,3.106
+2,8,Quinic acid,3,-5.78,2.112,3.197
+2,8,Quinic acid,4,-5.433,1.933,2.857
+2,8,Quinic acid,5,-5.338,2.306,3.629
+2,8,Quinic acid,6,-5.083,13.02,14.41
+2,8,Quinic acid,7,-5.079,7.636,10.6
+2,8,Quinic acid,8,-4.952,2.467,4.002
+2,8,Quinic acid,9,-4.943,11.54,13.08
+2,8,Quinic acid,10,-4.889,2.243,3.149

@@ -1,0 +1,10 @@
+compound_id,name,pubchem_cid,role
+CMP001,Acetaminophen,1983,screening
+CMP002,Aspirin,2244,screening
+CMP003,Caffeine,2519,screening
+CMP004,Ibuprofen,3672,screening
+CMP005,Naproxen,156391,screening
+CMP006,Quercetin,5280343,screening
+CMP007,Gefitinib,123631,screening
+CMP008,Erlotinib,176870,screening
+CMP009,Sorafenib,216239,screening

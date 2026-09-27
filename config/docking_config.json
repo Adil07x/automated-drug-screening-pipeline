@@ -1,0 +1,19 @@
+{
+  "target": "1IEP_chainA",
+
+  "receptor": "data/processed/protein/1IEP_chainA.pdbqt",
+
+  "docking_box": {
+    "center_x": 15.190,
+    "center_y": 53.903,
+    "center_z": 16.917,
+    "size_x": 19.0,
+    "size_y": 27.0,
+    "size_z": 24.0
+  },
+
+  "docking_parameters": {
+    "exhaustiveness": 8,
+    "num_modes": 10
+  }
+}

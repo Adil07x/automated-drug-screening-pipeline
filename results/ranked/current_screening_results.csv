@@ -1,0 +1,3 @@
+experiment_id,ligand_id,ligand_name,target_id,target_name,pdb_id,target_chain,admet_engine,admet_decision,toxicity_flags,absorption_flags,physicochemical_flags,qed_value,vina_version,pose_number,docking_affinity_kcal_mol,interaction_event_count,unique_interaction_residue_count,interaction_types,contacted_residues
+1,6,Oleic acid,1,1IEP_chainA,1IEP,A,ADMET-AI,PASS,0,0,2,0.2905169417988814,AutoDock Vina f458505-mod,1,-7.143,10,8,"Hydrophobic,VdWContact","ASN322:A,GLN252:A,LEU248:A,LEU370:A,PHE382:A,TYR253:A,VAL256:A,VAL299:A"
+2,8,Quinic acid,1,1IEP_chainA,1IEP,A,ADMET-AI,PASS,0,2,0,0.31803098282960546,AutoDock Vina f458505-mod,1,-5.967,7,7,VdWContact,"ALA269:A,ASP381:A,GLU286:A,ILE313:A,LYS271:A,THR315:A,VAL256:A"
