@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from pathlib import Path
 
@@ -27,17 +26,104 @@ def get_connection():
     return connection
 
 
-def get_ligands(connection):
+def get_ligands(connection, engine_name, engine_version):
     """
-    Return all ligands currently stored in the database.
-    """
-    query = """
-        SELECT ligand_id, name, source_file
-        FROM ligands
-        ORDER BY ligand_id
+    Return ligands that require ADMET-AI prediction.
+
+    A ligand requires processing when:
+    1. It has no ADMET-AI results.
+    2. Its stored ADMET-AI version differs from the current version.
+    3. Its current-version results are incomplete.
+
+    The current complete endpoint count is determined from the
+    existing database state rather than being hard-coded.
     """
 
-    return connection.execute(query).fetchall()
+    complete_endpoint_count = connection.execute(
+        """
+        SELECT MAX(endpoint_count)
+        FROM (
+            SELECT
+                ligand_id,
+                COUNT(DISTINCT endpoint) AS endpoint_count
+            FROM admet_results
+            WHERE engine = ?
+              AND engine_version = ?
+            GROUP BY ligand_id
+        )
+        """,
+        (engine_name, engine_version),
+    ).fetchone()[0]
+
+    if complete_endpoint_count is None:
+        complete_endpoint_count = 0
+
+    query = """
+        SELECT
+            l.ligand_id,
+            l.name,
+            l.source_file
+        FROM ligands l
+        LEFT JOIN (
+            SELECT
+                ligand_id,
+                engine_version,
+                COUNT(DISTINCT endpoint) AS endpoint_count
+            FROM admet_results
+            WHERE engine = ?
+            GROUP BY ligand_id, engine_version
+        ) a
+            ON l.ligand_id = a.ligand_id
+        WHERE
+            a.ligand_id IS NULL
+            OR a.engine_version != ?
+            OR a.endpoint_count < ?
+        ORDER BY l.ligand_id
+    """
+
+    ligands = connection.execute(
+        query,
+        (
+            engine_name,
+            engine_version,
+            complete_endpoint_count,
+        ),
+    ).fetchall()
+
+    return ligands, complete_endpoint_count
+
+
+def get_admet_status(connection, engine_name, engine_version):
+    """
+    Return the current ADMET-AI status for every ligand.
+
+    This is used for reporting and validation.
+    """
+
+    query = """
+        SELECT
+            l.ligand_id,
+            l.name,
+            COALESCE(a.engine_version, 'NONE') AS engine_version,
+            COALESCE(a.endpoint_count, 0) AS endpoint_count
+        FROM ligands l
+        LEFT JOIN (
+            SELECT
+                ligand_id,
+                engine_version,
+                COUNT(DISTINCT endpoint) AS endpoint_count
+            FROM admet_results
+            WHERE engine = ?
+            GROUP BY ligand_id, engine_version
+        ) a
+            ON l.ligand_id = a.ligand_id
+        ORDER BY l.ligand_id
+    """
+
+    return connection.execute(
+        query,
+        (engine_name,),
+    ).fetchall()
 
 
 # ------------------------------------------------------------
@@ -51,7 +137,9 @@ def smiles_from_sdf(sdf_path):
     """
 
     if not sdf_path.exists():
-        raise FileNotFoundError(f"SDF file not found: {sdf_path}")
+        raise FileNotFoundError(
+            f"SDF file not found: {sdf_path}"
+        )
 
     supplier = Chem.SDMolSupplier(
         str(sdf_path),
@@ -61,7 +149,9 @@ def smiles_from_sdf(sdf_path):
     molecule = supplier[0]
 
     if molecule is None:
-        raise ValueError(f"Could not read molecule from: {sdf_path}")
+        raise ValueError(
+            f"Could not read molecule from: {sdf_path}"
+        )
 
     smiles = Chem.MolToSmiles(
         molecule,
@@ -95,7 +185,10 @@ def replace_admet_results(
         WHERE ligand_id = ?
           AND engine = ?
         """,
-        (ligand_id, engine_name),
+        (
+            ligand_id,
+            engine_name,
+        ),
     )
 
     insert_query = """
@@ -141,28 +234,49 @@ def replace_admet_results(
 def main():
 
     print("=" * 70)
-    print("ADMET-AI DATABASE PIPELINE")
+    print("ADMET-AI INCREMENTAL DATABASE PIPELINE")
     print("=" * 70)
 
     print(f"Database: {DB_PATH}")
     print()
 
     # Load ADMET-AI once.
-    # This is important because loading the model for every
-    # compound would be unnecessarily slow.
     engine = ADMETAIEngine()
+
+    engine_name = "ADMET-AI"
+    engine_version = engine.engine_version
 
     connection = get_connection()
 
     try:
-        ligands = get_ligands(connection)
+
+        # Determine which compounds actually require processing.
+        ligands, complete_endpoint_count = get_ligands(
+            connection,
+            engine_name,
+            engine_version,
+        )
 
         print()
-        print(f"Compounds found in database: {len(ligands)}")
+        print(f"Engine: {engine_name}")
+        print(f"Engine version: {engine_version}")
+        print(
+            "Expected complete endpoint count: "
+            f"{complete_endpoint_count}"
+        )
+        print()
+
+        print(
+            "Compounds requiring ADMET prediction: "
+            f"{len(ligands)}"
+        )
         print()
 
         if not ligands:
-            print("No ligands found.")
+            print(
+                "All compounds already have complete "
+                "ADMET-AI results."
+            )
             return
 
         successful = 0
@@ -174,7 +288,10 @@ def main():
         ):
 
             print("-" * 70)
-            print(f"[{index}/{len(ligands)}] {name}")
+            print(
+                f"[{index}/{len(ligands)}] "
+                f"{name}"
+            )
             print(f"Ligand ID: {ligand_id}")
             print(f"Source: {source_file}")
 
@@ -192,7 +309,7 @@ def main():
                 predictions = engine.predict(smiles)
 
                 print(
-                    f"ADMET-AI endpoints returned: "
+                    "ADMET-AI endpoints returned: "
                     f"{len(predictions)}"
                 )
 
@@ -205,13 +322,13 @@ def main():
                 replace_admet_results(
                     connection=connection,
                     ligand_id=ligand_id,
-                    engine_name="ADMET-AI",
-                    engine_version=engine.engine_version,
+                    engine_name=engine_name,
+                    engine_version=engine_version,
                     records=records,
                 )
 
                 print(
-                    f"Stored in database: "
+                    "Stored in database: "
                     f"{len(records)} endpoint records"
                 )
 
@@ -221,7 +338,7 @@ def main():
 
             except Exception as error:
 
-                print(f"Status: FAILED")
+                print("Status: FAILED")
                 print(f"Error: {error}")
 
                 failed += 1

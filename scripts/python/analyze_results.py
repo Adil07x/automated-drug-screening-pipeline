@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_FILE = PROJECT_ROOT / "results/ranked/docking_results.csv"
+INPUT_FILE = PROJECT_ROOT / "results/ranked/current_docking_results.csv"
 
 OUTPUT_DIR = PROJECT_ROOT / "results/ranked"
 FIGURE_DIR = PROJECT_ROOT / "results/figures"

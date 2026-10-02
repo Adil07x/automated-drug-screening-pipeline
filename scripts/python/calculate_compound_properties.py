@@ -18,11 +18,25 @@ from rdkit.Chem import rdMolDescriptors
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DB_PATH = PROJECT_ROOT / "data" / "database" / "screening_database.sqlite"
+DB_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "database"
+    / "screening_database.sqlite"
+)
 
-COMPOUND_DIR = PROJECT_ROOT / "data" / "raw" / "compounds"
+COMPOUND_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "raw"
+    / "compounds"
+)
 
-SCSCORE_ROOT = PROJECT_ROOT / "external" / "scscore"
+SCSCORE_ROOT = (
+    PROJECT_ROOT
+    / "external"
+    / "scscore"
+)
 
 SA_SCORE_PATH = (
     Path(sys.prefix)
@@ -37,7 +51,10 @@ sys.path.insert(0, str(SA_SCORE_PATH))
 import sascorer
 
 
+# ============================================================
 # SCScore compatibility wrapper
+# ============================================================
+
 sys.path.insert(0, str(SCSCORE_ROOT))
 
 from scscore.standalone_model_numpy import SCScorer
@@ -47,9 +64,9 @@ class CompatibleSCScorer(SCScorer):
     """
     Compatibility wrapper for the original SCScore NumPy model.
 
-    The original implementation may return a one-element NumPy array
-    from the final layer. We convert that value to a scalar before
-    passing it to math.exp().
+    The original implementation may return a one-element NumPy
+    array from the final layer. We convert that value to a scalar
+    before passing it to math.exp().
     """
 
     def apply(self, x):
@@ -78,6 +95,7 @@ class CompatibleSCScorer(SCScorer):
     @staticmethod
     def _matmul(x, W):
         import numpy as np
+
         return np.matmul(x, W)
 
 
@@ -91,7 +109,9 @@ pains_params.AddCatalog(
     FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS
 )
 
-pains_catalog = FilterCatalog.FilterCatalog(pains_params)
+pains_catalog = FilterCatalog.FilterCatalog(
+    pains_params
+)
 
 
 brenk_params = FilterCatalog.FilterCatalogParams()
@@ -100,7 +120,9 @@ brenk_params.AddCatalog(
     FilterCatalog.FilterCatalogParams.FilterCatalogs.BRENK
 )
 
-brenk_catalog = FilterCatalog.FilterCatalog(brenk_params)
+brenk_catalog = FilterCatalog.FilterCatalog(
+    brenk_params
+)
 
 
 # ============================================================
@@ -116,7 +138,9 @@ SC_MODEL_PATH = (
 
 scscore_model = CompatibleSCScorer()
 
-scscore_model.restore(str(SC_MODEL_PATH))
+scscore_model.restore(
+    str(SC_MODEL_PATH)
+)
 
 
 # ============================================================
@@ -130,6 +154,7 @@ def get_alerts(catalog, mol):
     alerts = []
 
     for match in matches:
+
         description = match.GetDescription()
 
         if description:
@@ -169,11 +194,15 @@ def calculate_properties(mol):
 
     hba = Lipinski.NumHAcceptors(mol)
 
-    lipinski_violations = calculate_lipinski_violations(mol)
+    lipinski_violations = (
+        calculate_lipinski_violations(mol)
+    )
 
     tpsa = rdMolDescriptors.CalcTPSA(mol)
 
-    rotatable_bonds = rdMolDescriptors.CalcNumRotatableBonds(mol)
+    rotatable_bonds = (
+        rdMolDescriptors.CalcNumRotatableBonds(mol)
+    )
 
     veber_pass = (
         tpsa <= 140
@@ -197,8 +226,8 @@ def calculate_properties(mol):
         isomericSmiles=True
     )
 
-    _, sc_score = scscore_model.get_score_from_smi(
-        smiles
+    _, sc_score = (
+        scscore_model.get_score_from_smi(smiles)
     )
 
     return {
@@ -229,25 +258,45 @@ def main():
 
     cursor = conn.cursor()
 
+    # --------------------------------------------------------
+    # Select only compounds that do not yet have
+    # calculated compound properties.
+    # --------------------------------------------------------
+
     compounds = cursor.execute(
         """
-        SELECT ligand_id, name, source_file
-        FROM ligands
-        ORDER BY ligand_id
+        SELECT
+            l.ligand_id,
+            l.name,
+            l.source_file
+        FROM ligands l
+        LEFT JOIN compound_properties cp
+            ON l.ligand_id = cp.ligand_id
+        WHERE cp.ligand_id IS NULL
+        ORDER BY l.ligand_id
         """
     ).fetchall()
 
-    print(f"Compounds found in database: {len(compounds)}")
+    print(
+        f"Compounds requiring property calculation: "
+        f"{len(compounds)}"
+    )
     print()
+
+    # --------------------------------------------------------
+    # Process only unprocessed compounds
+    # --------------------------------------------------------
 
     for ligand_id, name, source_file in compounds:
 
         sdf_path = PROJECT_ROOT / source_file
 
         if not sdf_path.exists():
+
             print(f"SKIP: {name}")
             print(f"Missing file: {sdf_path}")
             print()
+
             continue
 
         supplier = Chem.SDMolSupplier(
@@ -258,37 +307,46 @@ def main():
         mol = supplier[0]
 
         if mol is None:
+
             print(f"SKIP: {name}")
             print("Could not read molecule.")
             print()
+
             continue
 
         properties = calculate_properties(mol)
 
+        # ----------------------------------------------------
+        # Insert newly calculated compound properties.
+        # ----------------------------------------------------
+
         cursor.execute(
             """
-            UPDATE compound_properties
-
-            SET
-                molecular_weight = ?,
-                logp = ?,
-                hbd = ?,
-                hba = ?,
-                lipinski_violations = ?,
-                tpsa = ?,
-                rotatable_bonds = ?,
-                veber_pass = ?,
-                pains_alert_count = ?,
-                pains_alerts = ?,
-                brenk_alert_count = ?,
-                brenk_alerts = ?,
-                sa_score = ?,
-                sc_score = ?,
-                calculated_at = CURRENT_TIMESTAMP
-
-            WHERE ligand_id = ?
+            INSERT INTO compound_properties (
+                ligand_id,
+                molecular_weight,
+                logp,
+                hbd,
+                hba,
+                lipinski_violations,
+                tpsa,
+                rotatable_bonds,
+                veber_pass,
+                pains_alert_count,
+                pains_alerts,
+                brenk_alert_count,
+                brenk_alerts,
+                sa_score,
+                sc_score,
+                calculated_at
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+            )
             """,
             (
+                ligand_id,
                 properties["molecular_weight"],
                 properties["logp"],
                 properties["hbd"],
@@ -303,25 +361,30 @@ def main():
                 properties["brenk_alerts"],
                 properties["sa_score"],
                 properties["sc_score"],
-                ligand_id,
-            )
+            ),
         )
 
         print(
             f"{name}: "
             f"MW={properties['molecular_weight']:.2f}, "
             f"LogP={properties['logp']:.2f}, "
-            f"Lipinski={properties['lipinski_violations']}, "
+            f"Lipinski="
+            f"{properties['lipinski_violations']}, "
             f"TPSA={properties['tpsa']:.2f}, "
-            f"RotB={properties['rotatable_bonds']}, "
-            f"Veber={'PASS' if properties['veber_pass'] else 'FAIL'}, "
-            f"PAINS={properties['pains_alert_count']}, "
-            f"Brenk={properties['brenk_alert_count']}, "
+            f"RotB="
+            f"{properties['rotatable_bonds']}, "
+            f"Veber="
+            f"{'PASS' if properties['veber_pass'] else 'FAIL'}, "
+            f"PAINS="
+            f"{properties['pains_alert_count']}, "
+            f"Brenk="
+            f"{properties['brenk_alert_count']}, "
             f"SA={properties['sa_score']:.3f}, "
             f"SC={properties['sc_score']:.3f}"
         )
 
     conn.commit()
+
     conn.close()
 
     print()

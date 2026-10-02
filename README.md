@@ -1,1476 +1,832 @@
 # Automated High-Throughput In-Silico Drug Screening Pipeline
 
-## Project Overview
+A reusable, incremental, database-driven computational drug-screening pipeline built around a local SDF compound library, SQLite as the source of truth, RDKit, SCScore, ADMET-AI, AutoDock Vina, MDAnalysis and ProLIF.
 
-This project is a reproducible, database-driven computational drug screening pipeline designed to prioritize small molecules for further investigation against a protein target.
+The project is designed for **repeated screening of growing compound libraries**, not a single one-off docking run. It runs on Linux/WSL and is controlled through Python and Bash scripts.
 
-The pipeline integrates compound acquisition, molecular property calculation, synthetic-complexity assessment, ADMET prediction, rule-based screening, ligand preparation, molecular docking, protein–ligand interaction analysis, experiment tracking, and result reporting into a structured workflow.
+---
 
-The system is designed to support repeatable screening experiments rather than one-off docking runs. Molecular structures, screening results, docking configurations, experiment metadata, computational results, and interaction data are persisted in a SQLite database and linked to the corresponding input structures and computational settings.
+## Table of contents
 
-The current implementation runs on Linux/WSL and is primarily controlled through Python and Bash scripts.
+1. [Scientific objective](#1-scientific-objective)
+2. [Design principles](#2-design-principles)
+3. [Inputs and outputs](#3-inputs-and-outputs)
+4. [Pipeline workflow](#4-pipeline-workflow)
+5. [Current verified run](#5-current-verified-run)
+6. [Compound ingestion and duplicate detection](#6-compound-ingestion-and-duplicate-detection)
+7. [Compound properties](#7-compound-properties)
+8. [ADMET-AI](#8-admet-ai)
+9. [Screening rules and docking eligibility](#9-screening-rules-and-docking-eligibility)
+10. [Protein, docking configuration and ligand preparation](#10-protein-docking-configuration-and-ligand-preparation)
+11. [Docking, result collection and analysis](#11-docking-result-collection-and-analysis)
+12. [Interaction analysis](#12-interaction-analysis)
+13. [Reproducibility and experiment identity](#13-reproducibility-and-experiment-identity)
+14. [Database](#14-database)
+15. [Scripts and orchestration](#15-scripts-and-orchestration)
+16. [Environments and technology stack](#16-environments-and-technology-stack)
+17. [Installation and running](#17-installation-and-running)
+18. [Project structure](#18-project-structure)
+19. [Verification and idempotency](#19-verification-and-idempotency)
+20. [Known limitations](#20-known-limitations)
+21. [Scientific interpretation](#21-scientific-interpretation)
+22. [Future development](#22-future-development)
+23. [Troubleshooting](#23-troubleshooting)
+24. [Reproducibility checklist](#24-reproducibility-checklist)
+25. [Development history and status](#25-development-history-and-status)
+26. [Contributing](#26-contributing)
+27. [References](#27-references)
+28. [License, author, contact, disclaimer](#28-license-author-contact-and-disclaimer)
 
-## Scientific Objective
+---
 
-The central scientific question is:
+## 1. Scientific objective
 
 > **Which compounds in a screening library are computationally prioritized as potential binders of a selected protein target?**
 
-The pipeline does not claim experimental binding, biological activity, therapeutic efficacy, or clinical safety. Instead, it provides a computational prioritization workflow that combines multiple filtering and structure-based analysis stages before compounds are selected for further investigation.
+The pipeline accepts local compound structures in SDF format, registers their chemical identities, calculates reusable molecular properties, predicts ADMET endpoints, applies project-defined screening rules, prepares eligible ligands, docks them against a configured target, collects and analyzes the results, and finally performs protein–ligand interaction analysis.
 
-## Inputs
+It does not claim experimental binding, biological activity, therapeutic efficacy or clinical safety. It is a computational **prioritization** workflow.
 
-The pipeline is designed around three primary inputs:
+---
 
-1. **Protein target**
-   - A suitable three-dimensional protein structure for docking.
-   - Protein structures can be represented using PDB-compatible structural data.
-   - A FASTA sequence alone is not sufficient for molecular docking; a suitable three-dimensional structure is required before docking.
-   - The docking site is defined through a configurable docking-box configuration.
+## 2. Design principles
 
-2. **Compound library**
-   - Small-molecule structures represented using formats such as SDF and SMILES.
-   - Compounds are registered in the project database with an internal compound ID.
-   - Canonical or isomeric SMILES and external identifiers such as PubChem CID can be retained when available.
-   - New compounds can be added to the existing master library without permanently removing previously registered compounds.
-
-3. **Screening and docking configuration**
-   - Molecular-property and filtering criteria.
-   - ADMET screening configuration.
-   - Docking engine and parameters.
-   - Protein/ligand preparation settings.
-   - Binding-site and docking-box parameters.
-
-## Outputs
-
-A screening run can produce:
-
-- Molecular descriptors and physicochemical properties.
-- Lipinski-rule calculations.
-- SCScore synthetic-complexity estimates.
-- ADMET prediction results.
-- Computational screening decisions such as `PASS`, `REVIEW`, and `EXCLUDED`.
-- Docking eligibility records.
-- Prepared ligand structures and PDBQT files.
-- Protein preparation records and receptor files.
-- Docking poses and predicted docking scores.
-- Protein–ligand interaction records generated with ProLIF.
-- Ranked docking and screening reports.
-- Persistent experiment records and configuration identifiers.
-- CSV reports for analysis and data exchange.
-- SQLite records providing the structured source of truth for the screening workflow.
-
-The resulting data can therefore be used to identify compounds for subsequent computational analysis or experimental investigation.
-## End-to-End Workflow
-
-The pipeline follows a staged screening architecture:
+### 2.1 SQLite is the source of truth
 
 ```text
-Compound Library
-       │
-       ▼
-Compound Acquisition / Registration
-       │
-       ▼
-Molecular Structure Validation
-       │
-       ▼
-RDKit Molecular Properties
-       │
-       ├── Lipinski descriptors
-       ├── Physicochemical properties
-       ├── QED
-       └── Structural filters
-       │
-       ▼
-SCScore
-       │
-       ▼
-ADMET-AI Prediction
-       │
-       ├── Absorption
-       ├── Distribution
-       ├── Metabolism
-       ├── Excretion
-       └── Toxicity
-       │
-       ▼
-Screening Decision
-(PASS / REVIEW / EXCLUDED)
-       │
-       ▼
-Docking Eligibility
-       │
-       ▼
-3D Ligand Preparation
-       │
-       ├── Hydrogen addition
-       ├── 3D coordinate generation
-       ├── Geometry optimization
-       └── PDBQT preparation
-       │
-       ▼
-Protein Preparation
-       │
-       ▼
-AutoDock Vina
-       │
-       ├── Multiple poses
-       └── Predicted docking scores
-       │
-       ▼
-ProLIF Interaction Analysis
-       │
-       ▼
-SQLite Experiment Database
-       │
-       ▼
-Ranked Results / CSV Reports
-## Implemented Capabilities
+data/database/screening_database.sqlite
+```
 
-### Compound Management
+The database stores compounds, targets, properties, ADMET predictions, screening decisions, docking configurations, experiments, docking results and interaction results, each linked to the inputs and settings that produced it. CSV files and figures are generated outputs for inspection and exchange; an exported CSV is never the authoritative record.
 
-The pipeline supports:
+### 2.2 The compound library is persistent and reusable
 
-- Registration of compounds in a persistent SQLite database.
-- Internal compound identifiers.
-- Storage of molecular structures and SMILES.
-- SHA-256 structure hashing.
-- Detection of previously registered molecular structures.
-- Addition of new compounds without permanently removing compounds from the master library.
-- Compound acquisition using the PubChem REST API where applicable.
+New SDF files are added to an existing library without removing previously registered compounds. A compound that fails a screening rule stays in the master library and can still be selected manually (see [section 9](#manual-compound-selection)).
 
-### Molecular Property Calculation
+### 2.3 Incremental processing
 
-RDKit is used for molecular structure processing and property calculation, including:
+Only new or changed records are processed; existing results are reused.
 
-- Molecular weight.
-- Hydrogen-bond donors.
-- Hydrogen-bond acceptors.
-- LogP.
-- Molar refractivity.
-- Lipinski rule-of-five properties.
-- Lipinski rule violations.
-- QED.
-- Additional molecular descriptors used by the screening workflow.
-### Structure-Based Screening
+```text
+Existing database: 10 compounds
+        |
+Add 100 new SDF structures
+        |
+        v
+Registration
+   +--> existing structures -> skip
+   +--> new structures      -> register
+                                |
+                                v
+                  properties -> ADMET-AI -> screening
+                                |
+                                v
+                  (eligible only) docking -> interactions
+```
 
-Compounds selected for downstream analysis can proceed through:
+### 2.4 Compound-level vs target-level work
 
-1. Ligand preparation.
-2. Protein preparation.
-3. Molecular docking.
-4. Docking-pose collection.
-5. Docking-score ranking.
-6. Protein–ligand interaction analysis.
+| Reusable across targets (compound-level) | Target-specific |
+|---|---|
+| SDF ingestion, structure identity | Ligand preparation for a docking setup |
+| Molecular properties, Lipinski, PAINS, Brenk, SA Score, SCScore | Docking |
+| ADMET predictions (once per engine/version) | Docking-result analysis |
+| ADMET screening | Protein–ligand interaction analysis |
 
-### Persistent Results
+```text
+100,000 compounds
+   +--> properties calculated once
+   +--> ADMET predicted once per engine/version
+   +--> Target A docking
+   +--> Target B docking
+   +--> Target C docking
+```
 
-The computational results are stored in a structured SQLite database rather than relying only on terminal output.
+In the data model, **a ligand is a reusable chemical entity** and **an experiment is one ligand × target × docking configuration**.
 
-This keeps compounds, targets, configurations, experiments, docking results, ADMET predictions, and interaction results associated with their corresponding computational records.
-## Molecular Complexity, ADMET and Screening
+### 2.5 Calculation is separate from screening
+
+A calculated property (for example SCScore) is not automatically an exclusion rule. The screening layer decides which stored values currently affect progression. This allows rules to change without rebuilding the compound database.
+
+---
+
+## 3. Inputs and outputs
+
+### Inputs
+
+1. **Protein target** — a three-dimensional, docking-ready structure (PDB-compatible). A FASTA sequence alone is not sufficient; automatic structure prediction is not part of the pipeline. The docking site is defined by a configurable docking box.
+2. **Compound library** — local SDF files in `data/raw/compounds/`. Each compound receives an internal ligand ID; canonical SMILES, structure hash and external identifiers such as PubChem CID are retained where available.
+3. **Screening and docking configuration** — property/ADMET screening criteria, docking engine and parameters, preparation settings and docking-box parameters.
+
+### Outputs
+
+- Molecular descriptors, Lipinski calculations, structural alerts, SA Score and SCScore.
+- ADMET-AI endpoint predictions (104 endpoints per compound).
+- Screening decisions (`PASS` / `REVIEW` / `FAIL`) and docking-eligibility records.
+- Prepared 3D ligand structures and PDBQT files; receptor files.
+- Docking poses and predicted scores.
+- ProLIF protein–ligand interaction records.
+- Experiment and configuration identifiers.
+- Ranked reports, CSV exports and figures; SQLite records as the structured source of truth.
+
+---
+
+## 4. Pipeline workflow
+
+```text
+Local SDF compound library
+        |
+        v
+1. Compound registration
+        |
+        v
+2. Compound properties
+   - molecular weight, LogP, HBD / HBA, Lipinski violations
+   - TPSA, rotatable bonds, Veber
+   - PAINS, Brenk, SA Score, SCScore
+        |
+        v
+3. ADMET-AI (104 endpoints, ADMET-AI 2.0.1)
+   absorption, distribution, metabolism, excretion, toxicity
+        |
+        v
+4. ADMET screening
+   toxicity / absorption / physicochemical flags, QED
+   PASS / REVIEW / FAIL  ->  docking eligibility
+        |
+        v
+5. Ligand preparation
+   SMILES validation, hydrogens, 3D embedding,
+   MMFF optimization, SDF + PDBQT (Meeko)
+        |
+        v
+6. AutoDock Vina docking (multiple poses)
+        |
+        v
+7. Docking-result collection
+        |
+        v
+8. Docking analysis
+        |
+        v
+9. MDAnalysis + ProLIF interaction analysis
+        |
+        v
+SQLite + CSV + figures
+```
+
+Individual stages remain independently executable so failed or incomplete stages can be resumed without repeating earlier calculations.
+
+---
+
+## 5. Current verified run
+
+The current validated test database:
+
+| Component | Count |
+|---|---:|
+| Registered compounds | 10 |
+| Compound-property records | 10 |
+| ADMET-AI endpoint records | 1,040 (104 × 10) |
+| ADMET screening records | 10 |
+| Docking-eligibility records | 10 |
+| Compounds eligible and docked | 2 |
+| Docking pose records | 20 (10 per experiment) |
+| Interaction records | 13 |
+
+The library contains Azadirachtin-D, -F, -H, -I, Caffeine, Oleic acid, Quercetin, Quinic acid and Riboflavin, plus Aspirin, added later as an incremental-processing test.
+
+### Docking results
+
+| Compound | Screening decision | Best Vina score (kcal/mol) | Poses | Interaction events |
+|---|---|---:|---:|---:|
+| Oleic acid | PASS | -7.143 | 10 | 7 |
+| Quinic acid | PASS | -5.967 | 10 | 6 |
+
+Oleic acid contacts were hydrophobic and van der Waals; Quinic acid contacts were van der Waals. These are computational predictions only.
+
+### Stage status
+
+```text
+1. Compound registration       PASS
+2. Compound properties         PASS
+3. ADMET-AI                    PASS
+4. ADMET screening             PASS
+5. Ligand preparation          PASS
+6. Docking                     PASS
+7. Result collection           PASS
+8. Docking analysis            PASS
+9. Interaction analysis        PASS
+```
+
+---
+
+## 6. Compound ingestion and duplicate detection
+
+### Input location and workflow
+
+```text
+data/raw/compounds/
+```
+
+SDF files are currently downloaded **manually**, because automated retrieval from the external compound source is affected by site/network restrictions. `scripts/python/download_compounds.py` (and PubChem REST API acquisition) exists and can be re-enabled without changing downstream architecture.
+
+```text
+Download SDF manually -> place *.sdf in data/raw/compounds/ -> run pipeline
+```
+
+### Chemical duplicate detection
+
+`register_ligands.py`:
+
+```text
+SDF -> RDKit molecule -> canonical SMILES -> SHA-256 structure hash
+         |
+         +-- hash exists in ligands.structure_hash -> skip
+         +-- new hash                              -> register
+```
+
+Identity is derived from the molecular structure, **not** the filename, compound name or source identifier. A copied Caffeine SDF with a different filename or identifier therefore maps to the existing compound rather than creating a second ligand. The filename is used only as the initial compound name.
+
+### SDF requirements
+
+- Each SDF must contain a readable, chemically interpretable structure; malformed molecules are skipped.
+- The current registration code processes the **first molecule** in an SDF supplier. Multi-record SDFs must be handled deliberately.
+- Keep source SDFs after registration; downstream ADMET and interaction code can use the registered source path.
+- Large libraries (tens or hundreds of thousands of structures) should be treated as a persistent library, added incrementally.
+
+### Planned ingestion improvements
+
+Explicit multi-record SDF ingestion, stronger normalization, salt/solvate handling, stereochemistry-aware identity rules, changed-file detection, validation reports, duplicate audit reports and ingestion manifests.
+
+---
+
+## 7. Compound properties
+
+Scripts: `calculate_compound_properties.py`, `calculate_lipinski.py`, `scscore_runner.py`.
+
+Stored fields: molecular weight, LogP, H-bond donors/acceptors, molar refractivity, Lipinski violations, TPSA, rotatable bonds, Veber pass, PAINS alert count/details, Brenk alert count/details, SA Score, SCScore, and QED (QED is also used by the screening layer).
+
+Property calculation is incremental: compounds that already have property records are not recalculated.
 
 ### SCScore
 
-The pipeline incorporates **SCScore (Synthetic Complexity Score)** as part of compound-property evaluation.
-
-SCScore provides a computational estimate of molecular synthetic complexity and is calculated locally using the SCScore model stored under:
+SCScore (Synthetic Complexity Score) is calculated locally using the NumPy-compatible model under:
 
 ```text
-external/scscore/
+external/scscore/models/full_reaxys_model_1024bool/model.ckpt-10654.as_numpy.json.gz
 ```
 
-The current implementation uses the NumPy-compatible SCScore model:
+> **SCScore is calculated and stored, but is not currently a PASS/REVIEW/FAIL screening threshold.** Do not describe current screening decisions as SCScore-based.
 
-external/scscore/models/full_reaxys_model_1024bool/model.ckpt-10654.as_numpy.json.gz
+---
 
-SCScore is integrated into the compound-property calculation workflow and is executed locally using the available CPU environment.
+## 8. ADMET-AI
 
-### ADMET Prediction
+Current engine: **ADMET-AI 2.0.1**, run on CPU in a dedicated Conda environment (`admet-ai`), separate from the main `drug-screening-pipeline` environment because its dependency stack differs. Activating the main environment does **not** make `admet_ai` importable; the pipeline invokes it explicitly:
 
-The current ADMET prediction engine is **ADMET-AI**.
+```bash
+conda run --no-capture-output -n admet-ai \
+    python scripts/python/run_admet_ai.py
+```
 
-The pipeline stores individual ADMET endpoint predictions rather than reducing the entire prediction to a single score.
+Individual endpoint predictions are stored (not collapsed into one score), covering absorption, distribution, metabolism, excretion, toxicity and drug-likeness/physicochemical properties.
 
-The current implementation evaluates a broad range of endpoints covering:
+### Replacing or adding an ADMET model
 
-- Absorption
-- Distribution
-- Metabolism
-- Excretion
-- Toxicity
-- Drug-likeness and physicochemical properties
+The `admet_results` table stores `engine`, `engine_version`, `endpoint`, `value`, `unit`, `prediction_type`, `uncertainty`, `status`, `raw_result` and `calculated_at`, so engines are not hard-coded into the schema. To add a future model:
 
-The current demonstration evaluates **104 ADMET endpoints per compound**.
+1. Create or update the engine wrapper (`scripts/python/admet/`).
+2. Record engine name and version.
+3. Define its endpoint set.
+4. Store predictions in `admet_results`.
+5. Update the screening layer only if the rules need endpoints the new model provides.
+6. Recalculate only compounds lacking complete results for that engine/version.
 
-ADMET-AI runs in a dedicated Conda environment using a CPU-based PyTorch installation.
+Do not overwrite old model results because a newer model exists; this preserves provenance and allows model comparison.
 
-### Screening Categories
+---
 
-The pipeline combines selected ADMET and molecular-property signals into project-defined screening categories:
+## 9. Screening rules and docking eligibility
 
-- `PASS`
-- `REVIEW`
-- `EXCLUDED`
+Script: `scripts/python/screen_admet.py`. The rules were reconstructed from the project's earlier A29L screening methodology and validated against the existing database. They are project-defined computational rules, not universal biological or regulatory cutoffs.
 
-These categories represent computational workflow decisions and are not clinical, regulatory, or experimental safety classifications.
+| Category | Endpoint | Flag if |
+|---|---|---:|
+| Toxicity | AMES | ≥ 0.50 |
+| Toxicity | DILI | ≥ 0.50 |
+| Toxicity | ClinTox | ≥ 0.50 |
+| Toxicity | hERG | ≥ 0.50 |
+| Absorption | Bioavailability_Ma | < 0.50 |
+| Absorption | Caco2_Wang | < -5.50 |
+| Physicochemical | Solubility_AqSolDB | < -4.00 |
+| Physicochemical | QED | < 0.30 |
 
-The screening logic considers selected toxicity, absorption, physicochemical, and drug-likeness indicators.
-
-The thresholds used by the project are computational screening rules and should not be interpreted as universal biological or regulatory cutoffs.
-
-### Docking Eligibility
-
-Screening results are translated into a separate docking-eligibility record.
-
-This creates a clear separation between:
+Decision logic (based on the toxicity flag count; absorption and physicochemical flags are recorded):
 
 ```text
-ADMET / molecular-property assessment
-                |
-                v
-       Screening decision
-                |
-                v
-        Docking eligibility
+toxicity_flags >= 2  -> FAIL
+toxicity_flags == 1  -> REVIEW
+toxicity_flags == 0  -> PASS
+```
 
-The master compound library is not permanently modified when a compound fails a screening criterion.
+Docking eligibility mapping:
 
-Manual Compound Selection
+```text
+PASS   -> ELIGIBLE
+REVIEW -> REVIEW
+FAIL   -> EXCLUDED
+```
 
-The workflow also supports deliberate manual inclusion of compounds that would otherwise not be selected automatically.
+Screening is incremental and idempotent. These categories organize compounds for downstream computation and are not clinical, regulatory or experimental safety classifications; neither `PASS` nor `FAIL` demonstrates safety or toxicity.
 
-A user can select:
+### Manual compound selection
 
-Compounds passing the configured filters.
-Compounds requiring review.
-Compounds failing a particular screening rule.
-A specific compound of interest.
-A manually selected list of compounds.
+A user can deliberately include compounds that would not be selected automatically: ones passing the filters, requiring review, failing a rule, or a hand-picked list. The scientific reason for overriding an automated decision should be documented. Lipinski-style rules are heuristics and do not determine biological activity.
 
-Manual inclusion can be documented separately together with the scientific reason for overriding an automated screening decision.
+---
 
-This is important because computational filters such as Lipinski's rules are heuristics and should not be treated as absolute rules for biological activity or drug development.
-## Reproducibility and Experiment History
+## 10. Protein, docking configuration and ligand preparation
 
-A major design goal of the project is to make computational screening experiments reproducible and distinguishable from one another.
+### Target
 
-### SQLite as the Source of Truth
+The current demonstration target is **PDB 1IEP, chain A**, prepared as a docking-ready PDBQT receptor (`data/processed/protein/1IEP_chainA.pdbqt`) and registered with `register_target.py`.
 
-The primary structured data store is:
+### Docking configuration
 
-    data/database/screening_database.sqlite
+The docking site is an explicit configuration, not hard-coded into the docking script. `config/docking_config.json`:
 
-The database stores information about:
+```json
+{
+  "target": "1IEP_chainA",
+  "receptor": "data/processed/protein/1IEP_chainA.pdbqt",
+  "docking_box": {
+    "center_x": 15.190, "center_y": 53.903, "center_z": 16.917,
+    "size_x": 19.0, "size_y": 27.0, "size_z": 24.0
+  },
+  "docking_parameters": { "exhaustiveness": 8, "num_modes": 10 }
+}
+```
 
-- Compounds and ligands.
-- Protein targets.
-- Molecular properties.
-- ADMET predictions.
-- Screening decisions.
-- Docking configurations.
-- Experiments.
-- Docking results.
-- Protein–ligand interaction results.
+The configuration is registered in `docking_configs` (box, exhaustiveness, number of modes, Vina version, SHA-256 `config_hash`). Changing an important parameter produces a distinguishable configuration and experiment rather than silently replacing a result.
 
-This allows computational results to remain associated with the exact compound, target, configuration, and experiment that produced them.
+### Ligand preparation
 
-### Configuration Identity
+Script: `prepare_ligands.py`. Only ligands whose docking eligibility permits it are prepared. Steps: SMILES validation → hydrogen addition → 3D conformer generation → MMFF geometry optimization → SDF output → PDBQT via Meeko. Prepared structures are tied to their internal ligand IDs.
 
-Important computational configurations are identified using SHA-256 hashes.
+---
 
-The project uses hashing for:
+## 11. Docking, result collection and analysis
 
-- Ligand molecular structures.
-- Protein/receptor structures.
-- Docking configurations.
+### Docking — `run_docking.py`
 
-The configuration identity includes important computational parameters such as:
+AutoDock Vina is the current docking engine. For each selected ligand the pipeline records configuration, target, ligand, Vina version, docking log, poses and predicted scores. Multiple poses are retained (10 per experiment currently). Vina scores are scoring-function estimates, not measured affinities; within the same setup, a more negative score is generally more favorable.
 
-- Docking engine.
-- Docking-box centre.
-- Docking-box dimensions.
-- Exhaustiveness.
-- Number of output poses.
-- Engine/version information.
+### Collection — `collect_results.py`
 
-A configuration hash allows the pipeline to distinguish an existing configuration from a materially changed configuration.
+Reads Vina logs, extracts pose number, affinity and RMSD bounds, stores results in SQLite, and writes:
 
-### Experiment Identity
+```text
+results/ranked/current_docking_results.csv
+results/ranked/current_screening_results.csv
+```
 
-An experiment links the relevant:
+The second file is exported from the `current_screening_results` view and combines screening decisions, docking scores and interaction summaries.
 
-    Target
-       +
-    Ligand
-       +
-    Docking Configuration
-       =
-    Experiment
+### Analysis — `analyze_results.py`
 
-This provides a persistent record of which target, compound, and computational configuration were used together.
+Selects the best pose per compound, ranks compounds by affinity, and writes:
 
-### Repeatability
+```text
+results/ranked/screening_summary.csv
+results/figures/best_docking_scores.png
+```
 
-The workflow is designed to distinguish repeated calculations from calculations performed with changed inputs or parameters.
+---
 
-If the relevant inputs and configuration remain unchanged, previously recorded results can be identified for reference and comparison.
+## 12. Interaction analysis
 
-A changed input or important computational parameter creates a distinguishable experimental configuration.
+Script: `interaction_analysis.py`, using MDAnalysis, ProLIF and RDKit. The stage:
 
-Examples include changes to:
+1. identifies completed docking experiments;
+2. selects pose 1 (the top-ranked pose);
+3. reads the docking pose;
+4. reconstructs the docked ligand from the original SDF plus docking coordinates;
+5. runs ProLIF;
+6. extracts protein–ligand interaction events;
+7. writes records to SQLite;
+8. exports `results/interactions/current_interactions.csv`.
 
-- Protein structure.
-- Ligand structure.
-- Ligand variant.
-- Docking site.
-- Docking-box dimensions.
-- Docking engine.
-- Docking parameters.
+Recorded information includes protein residue, residue number, chain (where available), interaction type, distance (where available), ligand/protein atom information, and analysis engine and version.
 
-## Database Architecture
+Interaction detection describes contacts in a computational pose; it does not establish that the complex is experimentally stable or functional.
 
-The SQLite database is organized into separate tables for the major stages of the screening workflow.
+**Warnings.** A successful run emits MDAnalysis warnings about a deprecated topology import path and bond guessing when the AtomGroup lacks explicit bond information. These are not failures but should be reviewed on dependency upgrades.
 
-The current database includes tables for:
+---
 
-- Compounds and ligands.
-- Protein targets.
-- Molecular properties.
-- ADMET predictions.
-- ADMET screening decisions.
-- Docking configurations.
-- Docking experiments.
-- Docking results.
-- Docking eligibility.
-- Protein–ligand interaction results.
+## 13. Reproducibility and experiment identity
 
-This structure separates raw computational results from screening decisions and experimental records while maintaining relationships between them.
+SHA-256 hashes identify ligand structures, receptor structures and docking configurations (engine, box centre and size, exhaustiveness, number of poses, engine version).
 
-### Current Reporting Layer
+```text
+Target + Ligand + Docking configuration = Experiment
+```
 
-A database view named `current_screening_results` provides an integrated reporting layer.
+(`experiments` enforces `UNIQUE(target_id, ligand_id, config_id)`.) If inputs and configuration are unchanged, previous results can be identified for reference; a change to protein, ligand or variant, docking site or box, engine or parameters creates a distinguishable experiment.
 
-The view combines information from:
+Results depend on exact input structures, software versions, models and settings, so results from different configurations should not be compared without accounting for those differences. When you change SDF files, thresholds, ADMET engines or versions, docking configurations, target structures or dependency versions, record the change in Git and update this README if the workflow changes. Do not silently change historical screening criteria.
 
-- Screening results.
-- Docking experiments.
-- Docking scores.
-- Docking configuration.
-- ADMET decisions.
-- Protein–ligand interaction analysis.
+The database should preserve: compound identity, source, structure, properties, ADMET engine/version, screening decision, docking configuration, docking results and interaction results.
 
-The resulting report can therefore connect a compound's screening decision with its docking score and interaction summary.
+```text
+Input Structure -> Software / Model -> Configuration -> Experiment -> Computational Result
+```
 
-### Data Exchange
+---
 
-The pipeline also exports selected results as CSV files for analysis and reporting.
+## 14. Database
 
-Current reporting outputs include:
+Tables:
 
-    results/ranked/current_docking_results.csv
-    results/ranked/current_screening_results.csv
-    results/interactions/current_interactions.csv
+```text
+targets               ligands                compound_properties
+admet_results         admet_screening        docking_eligibility
+docking_configs       experiments            docking_results
+interaction_results
+```
 
-SQLite remains the structured source of truth, while CSV files provide convenient data exchange and human-readable reporting.
+View: `current_screening_results` (integrated reporting across screening, experiments, docking scores and configuration, ADMET decisions and interactions).
 
-## Protein and Ligand Preparation
+Relationships: `targets → docking_configs → experiments → docking_results`, with each experiment also referencing a ligand. The database preserves processing history and provenance rather than only the final winners.
 
-### Protein Structure
+---
 
-The current demonstration uses the protein structure:
+## 15. Scripts and orchestration
 
-    PDB ID: 1IEP
-    Chain: A
+| Area | Script | Role |
+|---|---|---|
+| Database | `create_database.py` | Create SQLite schema |
+| Target | `register_target.py` | Register target/receptor |
+| Acquisition | `download_compounds.py` | Automated compound download (currently not the dependable path) |
+| Ingestion | `register_ligands.py` | SDF registration and duplicate detection |
+| Properties | `calculate_compound_properties.py` | Descriptors, alerts, SA Score, SCScore |
+| Properties | `calculate_lipinski.py` | Lipinski calculations |
+| Properties | `scscore_runner.py` | SCScore integration |
+| ADMET | `run_admet_ai.py` | Incremental ADMET-AI prediction |
+| ADMET | `admet/admet_ai_engine.py` | Engine wrapper (replaceable) |
+| Screening | `screen_admet.py` | Flags, decisions, docking eligibility |
+| Docking | `prepare_ligands.py`, `run_docking.py` | Preparation and Vina docking |
+| Results | `collect_results.py`, `analyze_results.py`, `interaction_analysis.py` | Collection, analysis, interactions |
 
-The workflow uses a prepared three-dimensional receptor structure for docking.
+All Python scripts live under `scripts/python/`.
 
-A FASTA sequence alone is not treated as a docking-ready receptor. A suitable three-dimensional protein structure is required before structure-based docking can be performed.
+### Bash runner — `scripts/bash/run_pipeline.sh`
 
-### Docking Site Configuration
+```text
+1. register_ligands.py
+2. calculate_compound_properties.py
+3. run_admet_ai.py          (via the admet-ai environment)
+4. screen_admet.py
+5. prepare_ligands.py
+6. run_docking.py
+7. collect_results.py
+8. analyze_results.py
+9. interaction_analysis.py
+```
 
-The docking site is represented by an explicit configuration rather than being permanently hard-coded into the docking script.
+The script uses `set -e`, so it stops when any stage fails.
 
-The current demonstration configuration is stored in:
+---
 
-    config/docking_config.json
+## 16. Environments and technology stack
 
-The current configured docking box is:
+### Environments
 
-    Center:
-    X = 15.190
-    Y = 53.903
-    Z = 16.917
+| Environment | Purpose | Validated components |
+|---|---|---|
+| `drug-screening-pipeline` (main) | Registration, properties, SCScore, ligand/protein preparation, docking, interaction analysis | Python 3.12, RDKit 2025.09.5, Open Babel 3.2.1, Meeko 0.8.0, AutoDock Vina, MDAnalysis 2.10.0, ProLIF, pandas, NumPy, SQLite |
+| `admet-ai` | ADMET prediction | Python 3.12, ADMET-AI 2.0.1, PyTorch (CPU; CUDA not available), NumPy, pandas, RDKit |
 
-    Size:
-    X = 19 Å
-    Y = 27 Å
-    Z = 24 Å
+Interaction analysis now runs from the main environment. An earlier separate `prolif-env` (ProLIF 2.2.2, MDAnalysis 2.10.0) should only be retained if a future dependency conflict requires it. Do not merge everything into one environment for convenience; ADMET-AI is kept separate because its dependency stack differs.
 
-The current docking parameters include:
-
-    Exhaustiveness = 8
-    Number of poses = 10
-
-The configured docking box is reused for the current screening demonstration.
-
-### Ligand Preparation
-
-Eligible ligands are prepared using RDKit and Meeko.
-
-The preparation workflow includes:
-
-1. Molecular structure validation.
-2. Hydrogen addition.
-3. Three-dimensional coordinate generation.
-4. Geometry optimization.
-5. SDF generation.
-6. PDBQT preparation.
-
-Prepared structures are associated with their corresponding internal ligand identifiers.
-
-## Molecular Docking and Interaction Analysis
-
-### AutoDock Vina
-
-The current structure-based docking engine is AutoDock Vina.
-
-For each selected ligand, the pipeline records:
-
-- Docking configuration.
-- Target.
-- Ligand.
-- Vina version.
-- Docking log.
-- Docked poses.
-- Predicted docking scores.
-
-Multiple poses can be retained for each docking experiment.
-
-Docking scores are computational estimates generated by the Vina scoring function. They are not experimental binding affinities.
-
-Within the same docking setup, a more negative predicted score is generally interpreted as more favorable according to the scoring function.
-
-### Protein–Ligand Interaction Analysis
-
-The pipeline uses ProLIF for post-docking protein–ligand interaction analysis.
-
-The current interaction workflow uses:
-
-- ProLIF 2.2.2.
-- MDAnalysis 2.10.0.
-- RDKit.
-
-The current implementation analyzes the top-ranked docking pose and records detected interaction events in the SQLite database.
-
-Recorded interaction information includes:
-
-- Protein residue.
-- Residue number.
-- Protein chain where available.
-- Interaction type.
-- Distance where available.
-- Ligand and protein atom information.
-- Analysis engine and version.
-
-This provides an additional structural interpretation layer beyond the docking score alone.
-## Current Demonstration
-
-The current demonstration uses a small compound set to demonstrate the complete computational workflow.
-
-### Screening Dataset
-
-The demonstration contains:
-
-- 9 compounds.
-- 104 ADMET endpoints per compound.
-- 936 stored ADMET prediction records.
-
-After the configured screening stage:
-
-- 2 compounds were classified as currently eligible for docking.
-- 2 docking experiments were completed.
-- 10 poses were generated for each completed docking experiment.
-- The top-ranked pose from each experiment was analyzed using ProLIF.
-- 17 protein–ligand interaction events were recorded.
-
-### Current Docking Results
-
-| Compound | Screening Decision | Best Vina Score (kcal/mol) | Docking Poses | Unique Interaction Residues |
-|---|---|---:|---:|---:|
-| Oleic acid | PASS | -7.143 | 10 | 8 |
-| Quinic acid | PASS | -5.967 | 10 | 7 |
-
-### Interaction Summary
-
-Oleic acid:
-
-- 10 interaction events.
-- 8 unique protein residues.
-- Detected interaction categories include hydrophobic and van der Waals contacts.
-
-Quinic acid:
-
-- 7 interaction events.
-- 7 unique protein residues.
-- Detected interaction category: van der Waals contacts.
-
-The interaction results are stored in the SQLite database and exported through:
-
-    results/interactions/current_interactions.csv
-
-### Current Reporting Outputs
-
-The current workflow generates:
-
-    results/ranked/current_docking_results.csv
-    results/ranked/current_screening_results.csv
-    results/interactions/current_interactions.csv
-
-The integrated screening report combines screening, docking, and interaction information for the current completed experiments.
-
-### Interpretation
-
-These results demonstrate that the computational workflow can progress from compound screening through docking and interaction analysis.
-
-They should not be interpreted as experimental confirmation of binding or biological activity.
-
-The docking scores represent computational predictions, while the interaction analysis describes contacts detected in the selected computational docking poses.
-
-## Software Environments
-
-The project uses separate Conda environments for components with different software dependencies.
-
-### Core Pipeline Environment
-
-    Environment: drug-screening-pipeline
-
-The core environment contains the principal cheminformatics and docking tools used by the pipeline.
-
-Verified runtime:
-
-- Python 3.12
-- RDKit 2025.09.5
-- NumPy 2.5.3
-- Pandas 3.0.6
-- AutoDock Vina f458505-mod
-- Open Babel 3.2.1
-- Meeko 0.8.0
-- SCScore local NumPy-compatible implementation
-
-### ADMET Environment
-
-    Environment: admet-ai
-
-The ADMET environment contains ADMET-AI and its machine-learning dependencies.
-
-Verified runtime:
-
-- PyTorch 2.14.0+cpu
-- CUDA: not available in the current runtime
-
-ADMET-AI is executed in a separate environment because its dependency stack is distinct from the core docking environment.
-
-### Interaction Analysis Environment
-
-    Environment: prolif-env
-
-The interaction-analysis environment contains the molecular interaction analysis stack.
-
-Verified runtime:
-
-- ProLIF 2.2.2
-- MDAnalysis 2.10.0
-- RDKit 2026.03.1
-- NumPy 2.5.3
-- Pandas 3.0.6
-- SciPy 1.18.1
-- Gemmi 0.7.5
-
-ProLIF is maintained in a separate environment to avoid dependency conflicts with the core docking workflow.
-
-### Environment Separation
-
-The environments are intentionally separated:
-
-- `drug-screening-pipeline` → compound processing, SCScore, ligand preparation, protein preparation, and docking
-- `admet-ai` → ADMET-AI prediction
-- `prolif-env` → ProLIF interaction analysis
-
-This separation keeps the main pipeline reproducible while allowing specialized tools to use their own compatible dependency stacks.
-
-## Technology Stack
-
-### Core Technologies
+### Technology stack
 
 | Technology | Role |
 |---|---|
-| Python | Pipeline implementation and scientific processing |
-| Bash | Command-line workflow and environment operations |
+| Python, Bash | Pipeline implementation and orchestration |
 | SQLite | Persistent experiment and result database |
-| RDKit | Molecular structures, descriptors, Lipinski rules, QED and 3D chemistry |
+| RDKit | Structures, descriptors, Lipinski, QED, 3D chemistry |
 | SCScore | Synthetic-complexity estimation |
-| ADMET-AI | ADMET prediction |
+| ADMET-AI (PyTorch) | ADMET prediction |
 | AutoDock Vina | Molecular docking |
-| Meeko | Ligand preparation and PDBQT generation |
-| ProLIF | Protein–ligand interaction analysis |
-| MDAnalysis | Molecular structure handling for interaction analysis |
+| Meeko | Ligand preparation, PDBQT generation |
+| Open Babel | Structure conversion |
+| MDAnalysis, ProLIF | Structure handling and interaction analysis |
+| PubChem REST API | Compound acquisition / external information |
+| Pandas, NumPy, Matplotlib | Tabular processing, numerics, figures |
+| Conda, Git/GitHub | Environment management, version control |
+| SHA-256 | Structure, receptor and configuration identity |
 
-### Supporting Technologies
+**Docking engine scope:** only AutoDock Vina is part of the verified pipeline. GNINA, smina, QVina and CNN-based scoring are possible future engines, not current components.
 
-| Technology | Role |
+---
+
+## 17. Installation and running
+
+The project targets Linux; the development setup is Ubuntu on WSL2 (Windows).
+
+```bash
+git clone git@github.com:Adil07x/automated-drug-screening-pipeline.git
+cd automated-drug-screening-pipeline
+```
+
+Environment definitions are under `environment/environment.yml`.
+
+### Verify the environments
+
+```bash
+conda activate drug-screening-pipeline
+python --version
+vina --version
+obabel -V
+python -c "from rdkit import Chem; print('RDKit OK')"
+python -c "import prolif, MDAnalysis; print('ProLIF:', prolif.__version__, 'MDAnalysis:', MDAnalysis.__version__)"
+
+conda run -n admet-ai python -c "import admet_ai; print('admet_ai: OK')"
+conda run -n admet-ai python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+### Run the complete pipeline
+
+```bash
+conda activate drug-screening-pipeline
+cd ~/Bioinformatics/automated-drug-screening-pipeline
+# place new *.sdf files in data/raw/compounds/
+bash scripts/bash/run_pipeline.sh
+```
+
+Existing and new compounds are processed incrementally.
+
+### Run individual stages (recommended for debugging)
+
+```bash
+python scripts/python/register_ligands.py
+python scripts/python/calculate_compound_properties.py
+conda run --no-capture-output -n admet-ai python scripts/python/run_admet_ai.py
+python scripts/python/screen_admet.py
+python scripts/python/prepare_ligands.py
+python scripts/python/run_docking.py
+python scripts/python/collect_results.py
+python scripts/python/analyze_results.py
+python scripts/python/interaction_analysis.py
+```
+
+Avoid repeatedly rerunning expensive docking while debugging.
+
+---
+
+## 18. Project structure
+
+```text
+automated-drug-screening-pipeline/
+├── config/
+│   └── docking_config.json
+├── data/
+│   ├── database/screening_database.sqlite
+│   ├── ligands/{3d,pdbqt}/
+│   ├── metadata/compound_library.csv
+│   ├── processed/{ligands,protein}/
+│   └── raw/{compounds,protein}/
+├── environment/environment.yml
+├── external/scscore/
+├── results/
+│   ├── docking/
+│   ├── figures/
+│   ├── interactions/
+│   └── ranked/
+├── scripts/
+│   ├── bash/run_pipeline.sh
+│   └── python/
+│       ├── admet/admet_ai_engine.py
+│       ├── analyze_results.py
+│       ├── calculate_compound_properties.py
+│       ├── calculate_lipinski.py
+│       ├── collect_results.py
+│       ├── create_database.py
+│       ├── download_compounds.py
+│       ├── interaction_analysis.py
+│       ├── prepare_ligands.py
+│       ├── register_ligands.py
+│       ├── register_target.py
+│       ├── run_admet_ai.py
+│       ├── run_docking.py
+│       ├── scscore_runner.py
+│       ├── screen_admet.py
+│       └── test_experiment.py
+├── .gitignore
+├── LICENSE
+└── README.md
+```
+
+| Directory | Role |
 |---|---|
-| PyTorch | Machine-learning runtime used by ADMET-AI |
-| Open Babel | Molecular structure conversion and cheminformatics support |
-| PubChem REST API | Compound acquisition and external compound information |
-| Pandas | Tabular data processing and CSV reporting |
-| NumPy | Numerical computation and SCScore support |
-| Matplotlib | Scientific visualization |
-| Conda | Environment and dependency management |
-| Git / GitHub | Version control and project distribution |
-| SHA-256 | Molecular, receptor and configuration identity |
+| `config/` | Reproducible computational settings (docking box, Vina parameters) |
+| `data/raw/` | Source compound and protein structures |
+| `data/processed/` | Prepared protein and ligand structures |
+| `data/ligands/` | Generated 3D ligands and docking-ready PDBQT files |
+| `data/database/` | SQLite source-of-truth database |
+| `external/scscore/` | Local SCScore source and model resources (large payloads excluded via `.gitignore`) |
+| `results/docking/` | Vina outputs and logs |
+| `results/interactions/` | ProLIF interaction results |
+| `results/ranked/`, `results/figures/` | Ranked CSV reports and figures |
 
-### Docking Engine Scope
+---
 
-The current reproducible docking workflow uses AutoDock Vina.
+## 19. Verification and idempotency
 
-GNINA, smina, QVina and CNN-based docking scoring are not currently part of the verified reproducible pipeline.
+Tested against the 10-compound library. Rerunning after registration and property calculation produced:
 
-They may be considered as future alternative docking and scoring engines rather than being represented as currently implemented components.
-## Installation
+```text
+New ligands registered: 0
+Compounds requiring property calculation: 0
+Compounds requiring ADMET prediction: 0
+No new compounds require ADMET screening.
+```
 
-The project is intended to run in a Linux environment. The development setup used for the current implementation is Ubuntu under WSL2 on Windows.
+Verified behavior:
 
-### Clone the Repository
+- Existing compounds are recognized, not re-registered; duplicate Caffeine structures with different identifiers map to the existing compound.
+- Adding Aspirin created a new ligand ID and added downstream calculations without recalculating existing compounds.
+- Existing properties and complete ADMET results are retained; screening rows are not recreated unnecessarily.
+- Only eligible compounds proceed to preparation and docking (2 docked; 2 interaction analyses completed).
 
-    git clone git@github.com:Adil07x/automated-drug-screening-pipeline.git
-    cd automated-drug-screening-pipeline
+A rerun with no new input performs little or no expensive computation.
 
-### Conda Environments
+---
 
-The project uses separate Conda environments for the core pipeline, ADMET prediction, and interaction analysis.
+## 20. Known limitations
 
-Activate the core environment:
+**Execution scope is global, not per experiment.** The database is experiment-aware (target → configuration → experiment → results), but the execution scripts are not yet fully isolated by experiment/target:
 
-    conda activate drug-screening-pipeline
+- `run_docking.py` operates on the shared ligand PDBQT folder rather than only the ligands selected for a given target run.
+- `collect_results.py` reads all completed experiments and looks for their logs in the shared `results/docking/` directory.
+- `config/docking_config.json` is currently specific to `1IEP_chainA`.
+- `analyze_results.py` reads `results/ranked/docking_results.csv` (historical), while `collect_results.py` writes `current_docking_results.csv`; this filename inconsistency should be reconciled.
+- `test_experiment.py` demonstrates experiment records and is not connected to the production pipeline.
 
-Verify the principal tools:
+Until this is addressed, a run against a different target (for example a historical A29L validation) risks mixing ligands and results from other runs. The planned fix is to scope docking, collection and analysis to the ligands and experiments selected for the target/configuration at hand, while still drawing compounds from the shared library (no separate "campaign" schema is required).
 
-    python --version
-    vina --version
-    obabel -V
+**Other limitations**
 
-Verify RDKit:
+- First-molecule-only SDF registration; no changed-file detection yet.
+- Automated compound download is unreliable because of external restrictions.
+- SCScore is not part of the screening thresholds.
+- Docking uses a single engine (Vina) and interaction analysis uses only the top-ranked pose.
+- Throughput depends on CPU resources, molecular complexity and library size; the architecture is intended to scale beyond the small demonstration set.
 
-    python -c "from rdkit import Chem; print('RDKit OK')"
+---
 
-### Verify the ADMET Environment
+## 21. Scientific interpretation
 
-    conda activate admet-ai
+The pipeline is a computational prioritization framework:
 
-Verify PyTorch:
+```text
+Compound Library -> Molecular / ADMET Screening -> Docking
+   -> Interaction Analysis -> Computational Prioritization -> Experimental Validation
+```
 
-    python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+- **Docking scores** are estimates from a scoring function, not experimental binding affinities or predictions of activity.
+- **ADMET categories** are workflow decision rules; they are not clinical, regulatory or experimental safety classifications.
+- **Lipinski and physicochemical filters** are heuristics. Failing compounds can remain in the library and be selected manually when scientifically justified.
+- **Receptor structure** — docking requires an appropriate 3D structure and a defined binding region.
+- **Interaction analysis** describes contacts in the analyzed pose only.
 
-The current validated ADMET environment uses CPU execution.
+Final determination of binding, activity, pharmacokinetics, toxicity and therapeutic potential requires experimental and/or validated external evidence.
 
-### Verify the Interaction Environment
+---
 
-    conda activate prolif-env
+## 22. Future development
 
-Verify ProLIF and MDAnalysis:
+Future work aims to increase automation, scalability and analysis depth without changing the experiment-tracking architecture.
 
-    python -c "import prolif, MDAnalysis; print('ProLIF:', prolif.__version__); print('MDAnalysis:', MDAnalysis.__version__)"
+- **Ingestion:** multi-record SDFs, stronger normalization, salt/solvate and stereochemistry policies, changed-file detection, manifests, validation and duplicate-audit reports, batch ingestion of very large libraries.
+- **Experiment isolation:** target/experiment-scoped docking, collection and analysis; target-specific configuration files.
+- **Orchestration:** parallel processing, resumable runs, tracking of failed compounds and errors, checkpointing, resource-aware and batch execution, GPU methods where supported.
+- **Screening:** versioned, configurable rules layer (Lipinski, Veber, SCScore, SA Score, PAINS, Brenk, QED, solubility, absorption, toxicity, other ADMET endpoints); every rule documented and versioned.
+- **ADMET:** multiple engines and model versions side by side, old predictions preserved, model comparison, automatic detection of compounds needing prediction per engine/version.
+- **Docking:** GNINA, smina, QVina variants, alternative Vina scoring configurations, machine-learning rescoring (each treated as a separate method), stronger pose-quality checks.
+- **Pose and interaction analysis:** configurable top-N poses, clustering, interaction fingerprints and frequency, residue-level comparison, comparative binding-site analysis, explicit bond information handling, dependency compatibility updates.
+- **Ranking:** documented multi-signal ranking combining ADMET status, properties, SCScore, docking score, interaction count/type, contacted residues and pose consistency.
+- **Reporting and tools:** automated reports (compound, ADMET, ranking, interaction, configuration, experiment history, QC), Excel reports, dashboards, command-line queries, filtered exports, experiment comparison, compound audit trail, screening-rule and model provenance.
+- **Experimental validation integration:** store externally generated binding measurements, assay results, literature evidence and validation status, clearly separated from computational predictions.
+- **Method provenance:** any new method records software, version, model, input structure, configuration, parameters, execution status, output and experiment identity.
 
-## Running the Pipeline
+---
 
-The pipeline is composed of individual reproducible stages.
-
-Typical processing follows:
-
-    Compound registration
-            |
-            v
-    Molecular property calculation
-            |
-            v
-    SCScore
-            |
-            v
-    ADMET-AI
-            |
-            v
-    Screening / docking eligibility
-            |
-            v
-    Ligand preparation
-            |
-            v
-    Protein preparation
-            |
-            v
-    Docking
-            |
-            v
-    Interaction analysis
-            |
-            v
-    Result collection
+## 23. Troubleshooting
 
-Individual stages are implemented through the Python scripts under:
+**`ModuleNotFoundError: No module named 'rdkit'`** — you are probably in the `base` Conda environment. Activate the project environment (`conda activate drug-screening-pipeline`) and verify with `python -c "import rdkit; print(rdkit.__version__)"`. A failed import means registration never ran, so an unchanged ligand count does not confirm duplicate detection.
 
-    scripts/python/
+**`ModuleNotFoundError: No module named 'admet_ai'`** — the main environment does not contain ADMET-AI. Verify with `conda run -n admet-ai python -c "import admet_ai; print('OK')"`; the pipeline already launches it in the `admet-ai` environment.
 
-The SQLite database should be treated as the persistent record of the computational experiment.
+**`ModuleNotFoundError: No module named 'MDAnalysis'`** — install it in `drug-screening-pipeline` and verify with `conda run -n drug-screening-pipeline python -c "import MDAnalysis; print(MDAnalysis.__version__)"`.
 
-Generated scientific artifacts should remain associated with the corresponding compound, target, configuration, and experiment.
+**ProLIF interaction analysis fails** — check `import prolif` in the main environment and run `python scripts/python/interaction_analysis.py` directly.
 
-## Reproducible Docking Configuration
+**No new ADMET predictions** — normally expected when every registered compound already has complete results for the current engine/version.
 
-The current demonstration uses:
+**No eligible ligands** — inspect `admet_screening` and `docking_eligibility`. This can be the correct outcome of the configured rules, not a software failure.
 
-    config/docking_config.json
+**`analyze_results.py` reports missing input** — check the `docking_results.csv` vs `current_docking_results.csv` filename inconsistency described in [section 20](#20-known-limitations).
 
-Important parameters include:
+---
 
-- Receptor structure.
-- Ligand preparation.
-- Docking-box centre.
-- Docking-box dimensions.
-- Exhaustiveness.
-- Number of poses.
-- Docking engine and version.
+## 24. Reproducibility checklist
 
-Changing an important docking parameter should result in a distinguishable configuration and experiment rather than silently replacing an existing result.
+**Inputs**
+- [ ] Target protein structure and chain identified
+- [ ] Compound identity and structure/SMILES stored; external identifier recorded when available
+- [ ] Docking site and configuration defined
 
-## Project Structure
+**Methods**
+- [ ] Properties, SCScore and ADMET prediction completed
+- [ ] Screening decision and docking eligibility recorded
+- [ ] Ligand and protein preparation succeeded
+- [ ] Docking completed; poses and scores available
+- [ ] Interaction analysis completed for selected poses
 
-The repository is organized around reproducible computational screening, persistent experiment records, and generated scientific results.
+**Experiment tracking**
+- [ ] Software and model versions recorded
+- [ ] Docking configuration identified and its identity preserved
+- [ ] Experiment identity stored in SQLite and linked to the correct target and ligand
+- [ ] Changed parameters create distinguishable experiments
 
-    automated-drug-screening-pipeline/
-    |
-    ├── config/
-    │   └── docking_config.json
-    |
-    ├── data/
-    │   ├── database/
-    │   │   └── screening_database.sqlite
-    │   ├── ligands/
-    │   │   ├── 3d/
-    │   │   └── pdbqt/
-    │   ├── metadata/
-    │   │   └── compound_library.csv
-    │   ├── processed/
-    │   │   ├── ligands/
-    │   │   └── protein/
-    │   └── raw/
-    │       ├── compounds/
-    │       └── protein/
-    |
-    ├── external/
-    │   └── scscore/
-    |
-    ├── results/
-    │   ├── docking/
-    │   ├── interactions/
-    │   └── ranked/
-    |
-    ├── scripts/
-    │   └── python/
-    │       ├── calculate_compound_properties.py
-    │       ├── calculate_lipinski.py
-    │       ├── collect_results.py
-    │       ├── create_database.py
-    │       ├── interaction_analysis.py
-    │       ├── prepare_ligands.py
-    │       ├── register_ligands.py
-    │       ├── run_admet_ai.py
-    │       ├── run_docking.py
-    │       ├── scscore_runner.py
-    │       └── ...
-    |
-    ├── .gitignore
-    ├── environment/environment.yml
-    ├── LICENSE
-    └── README.md
+**Results**
+- [ ] SQLite holds the persistent result; CSV reports come from the current run
+- [ ] Historical results are not mixed with the current run
+- [ ] Scores are treated as predictions, not measurements
+- [ ] Manually selected compounds have a documented rationale
 
-### Directory Roles
+**Repository hygiene**
+- [ ] No sensitive or private information; no large local-only payloads, temporary files or caches
+- [ ] Configuration files and required scripts included
+- [ ] Documentation matches the implemented workflow; claims limited to verified components
 
-`config/`
+---
 
-Contains reproducible configuration files defining computational settings such as the docking box and AutoDock Vina parameters.
+## 25. Development history and status
 
-`data/`
+The project evolved from a target-specific A29L natural-compound screening workflow (in silico screening against Monkeypox A29L) into a reusable incremental pipeline.
 
-Contains structured project data, molecular structures, prepared inputs, and the SQLite experiment database.
+- **Ingestion:** reusable local SDF ingestion, canonical-structure duplicate detection, incremental registration; tested with duplicate Caffeine and an Aspirin addition.
+- **Properties:** expanded descriptors, PAINS/Brenk, SA Score, SCScore; incremental calculation.
+- **ADMET:** ADMET-AI integration, engine wrapper, engine/version tracking, 104-endpoint storage, incremental prediction, dedicated environment.
+- **Screening:** `screen_admet.py`, reconstructed and validated thresholds, flags, PASS/REVIEW/FAIL decisions, docking eligibility, incremental and idempotent behavior.
+- **Docking:** eligibility integrated with ligand preparation, docking, result collection and analysis.
+- **Interactions:** MDAnalysis and ProLIF integration, docked-ligand reconstruction from SDF plus pose, SQLite storage, CSV reporting.
+- **Orchestration:** the runner expanded from the later docking stages to the full nine-stage workflow.
 
-`data/raw/`
+**Current stage:** a functional end-to-end research and portfolio prototype in a hardening phase, not a production pharmaceutical platform. Next priorities, in order: large-library SDF ingestion, change detection, configurable screening rules, ADMET engine/version replacement, provenance and reproducibility, validation of docking and interaction outputs, reporting.
 
-Contains source protein and compound structures before downstream processing.
+---
 
-`data/processed/`
+## 26. Contributing
 
-Contains prepared protein and ligand structures used by computational stages.
+Contributions that improve reproducibility, reliability, documentation or usability are welcome, for example: automation, validated methods, database queries and reporting, ADMET and docking workflows, interaction analysis, reproducibility checks, error handling and logging, tests, and efficiency.
 
-`data/ligands/`
+Contributions should describe the change clearly, preserve reproducibility, document important parameters, identify software/model versions, avoid presenting unvalidated methods as experimentally established, avoid committing large generated files, and keep current implementation distinct from future features.
 
-Contains generated three-dimensional ligand structures and docking-ready PDBQT files.
+A new prediction or analysis method should document its name, version, model, input requirements, configuration, output format, how results are stored, and its effect on experiment identity.
 
-`data/database/`
+**Reporting issues:** include the OS/WSL environment, Conda environment, Python and relevant software versions, command executed, error message, configuration, input type, and expected vs observed behaviour.
 
-Contains the SQLite source-of-truth database for compounds, molecular properties, ADMET results, screening decisions, docking experiments, docking results, and protein–ligand interaction results.
+---
 
-`external/scscore/`
+## 27. References
 
-Contains the locally integrated SCScore source and supporting model resources required for SCScore calculation.
+The project builds on established open-source software, databases and methods: RDKit, PubChem, Open Babel, SCScore, ADMET-AI, AutoDock Vina, Meeko, ProLIF, MDAnalysis, SQLite, Python, Conda, Git and GitHub. Consult each project's documentation and publications, and cite the original methods, software, models and data sources in derived work rather than treating this repository as their origin.
 
-Large SCScore model and dataset payloads are excluded from version control where appropriate through `.gitignore`.
+---
 
-`results/`
+## 28. License, author, contact and disclaimer
 
-Contains generated computational results and reports.
+### License
 
-`results/docking/`
+Released under the **MIT License** (see `LICENSE`). Integrated third-party components (RDKit, AutoDock Vina, Meeko, Open Babel, ProLIF, MDAnalysis, ADMET-AI, SCScore, PubChem resources) remain under their own licenses and terms; consult upstream projects for licensing, citation and usage requirements. If this project or methodology is used in research, cite the relevant upstream software, models, databases and methods in addition to this repository.
 
-Contains docking output files and logs associated with computational experiments.
+### Author
 
-`results/interactions/`
+**Sk. Adil Siraj** — developed as a computational biology and drug-discovery portfolio project demonstrating molecular informatics, bioinformatics, cheminformatics, ADMET prediction, structure-based virtual screening, molecular docking, protein–ligand interaction analysis, Python-based scientific software development, SQLite experiment tracking and reproducible computational workflows.
 
-Contains protein–ligand interaction analysis results generated using ProLIF.
+### Contact
 
-`results/ranked/`
+- Repository: https://github.com/Adil07x/automated-drug-screening-pipeline
+- GitHub: https://github.com/Adil07x
+- Portfolio: https://adil07x.github.io/
 
-Contains current ranked docking and integrated screening CSV reports.
+For questions, collaboration or discussion, use the contact information on the GitHub profile and portfolio.
 
-`scripts/python/`
+### Disclaimer
 
-Contains the Python components implementing the computational workflow.
-
-### Data Flow
-
-    Raw Structures
-          |
-          v
-    Compound / Target Registration
-          |
-          v
-    Molecular Properties
-          |
-          v
-    SCScore
-          |
-          v
-    ADMET-AI
-          |
-          v
-    Screening and Docking Eligibility
-          |
-          v
-    Ligand / Protein Preparation
-          |
-          v
-    AutoDock Vina
-          |
-          v
-    ProLIF Interaction Analysis
-          |
-          v
-    SQLite Experiment Database
-          |
-          v
-    Ranked Results / CSV Reports
-
-## Scientific Interpretation and Limitations
-
-The results produced by this pipeline are computational screening results and should be interpreted as prioritization evidence rather than experimental validation.
-
-### Docking Scores
-
-AutoDock Vina docking scores are computational estimates generated by a scoring function.
-
-Within the same target, ligand preparation procedure, docking configuration, and scoring setup, a more negative predicted score is generally interpreted as more favorable according to that scoring function.
-
-Docking scores should not be treated as experimentally measured binding affinities or as direct predictions of biological activity.
-
-### ADMET Screening
-
-The ADMET screening categories used by this project are computational decision rules defined for this workflow.
-
-The categories:
-
-- `PASS`
-- `REVIEW`
-- `EXCLUDED`
-
-are intended to organize compounds for downstream computational screening.
-
-They are not clinical, regulatory, or experimental safety classifications.
-
-A compound classified as `PASS` has not been demonstrated to be safe, effective, bioavailable, or therapeutically useful.
-
-Similarly, a compound classified as `EXCLUDED` has not been experimentally demonstrated to be toxic or biologically inactive.
-
-### Lipinski and Physicochemical Filters
-
-Lipinski-style rules and physicochemical thresholds are used as practical screening heuristics.
-
-These rules help prioritize compounds for computational analysis but do not determine whether a compound is biologically active.
-
-Compounds that fail a screening rule can therefore be retained in the master compound library and can be manually selected for analysis when scientifically justified.
-
-### Protein Structure Requirements
-
-Molecular docking requires an appropriate three-dimensional receptor structure.
-
-A FASTA sequence represents the protein sequence and is not, by itself, a docking-ready three-dimensional receptor.
-
-The current workflow therefore expects a suitable prepared 3D protein structure and a defined binding region.
-
-Automatic protein structure prediction is not currently part of the implemented pipeline.
-
-### Interaction Analysis
-
-ProLIF interaction analysis provides a computational description of interactions detected in the analyzed docking pose.
-
-The current demonstration analyzes the top-ranked docking pose for each completed experiment.
-
-Interaction detection does not establish that the predicted complex is experimentally stable or biologically functional.
-
-### Current Demonstration Scope
-
-The current demonstration contains a relatively small compound set compared with the intended high-throughput use of the architecture.
-
-The demonstrated workflow currently includes:
-
-- 9 registered compounds.
-- 104 ADMET endpoints per compound.
-- 936 stored ADMET endpoint results.
-- 2 compounds currently eligible for docking.
-- 2 completed docking experiments.
-- 10 docking poses generated per experiment.
-- Top-pose interaction analysis using ProLIF.
-- 17 recorded interaction events.
-
-The architecture is designed to scale to larger compound libraries, but practical throughput depends on available CPU/GPU resources, molecular complexity, software settings, and the number of compounds processed.
-
-### Reproducibility
-
-Computational results depend on the exact input structures, software versions, models, configuration parameters, and docking settings used during an experiment.
-
-The project therefore stores experiment and configuration information in SQLite so that computational runs can be distinguished when important inputs or parameters change.
-
-Results from different configurations should not be directly compared without considering the changes in computational setup.
-
-### Overall Interpretation
-
-The pipeline should be viewed as a computational prioritization framework:
-
-    Compound Library
-          |
-          v
-    Molecular / ADMET Screening
-          |
-          v
-    Docking
-          |
-          v
-    Interaction Analysis
-          |
-          v
-    Computational Prioritization
-          |
-          v
-    Experimental Validation
-
-The final determination of binding, biological activity, pharmacokinetics, toxicity, and therapeutic potential requires appropriate experimental and/or validated external evidence.
-## Future Development
-
-The current implementation provides a reproducible computational screening workflow. Future development will focus on increasing automation, scalability, analysis depth, and usability without changing the core experiment-tracking architecture.
-
-### Automated End-to-End Execution
-
-The pipeline can be extended toward a single orchestrated workflow that automatically moves compounds through:
-
-    Compound Ingestion
-          |
-          v
-    Property Calculation
-          |
-          v
-    SCScore
-          |
-          v
-    ADMET Screening
-          |
-          v
-    Docking Eligibility
-          |
-          v
-    Ligand Preparation
-          |
-          v
-    Protein Preparation
-          |
-          v
-    Molecular Docking
-          |
-          v
-    Interaction Analysis
-          |
-          v
-    Ranking and Reporting
-
-The existing individual stages are intended to remain independently executable so that failed or incomplete stages can be resumed without unnecessarily repeating previous calculations.
-
-### Larger Compound Libraries
-
-The architecture can be applied to substantially larger compound collections.
-
-Future improvements may include:
-
-- Batch compound ingestion.
-- Incremental processing of newly added compounds.
-- Automatic detection of previously processed compounds.
-- Parallel processing where appropriate.
-- Resumable screening runs.
-- Automated tracking of failed compounds and processing errors.
-
-### Expanded ADMET Engine Support
-
-ADMET-AI is the current implemented ADMET engine.
-
-The project can later support additional prediction engines through the existing engine-oriented architecture.
-
-Different ADMET engines can be compared while preserving the identity of the computational method used for each result.
-
-### Advanced Docking Engines
-
-AutoDock Vina is the currently used docking engine.
-
-Future versions may evaluate alternative docking or scoring approaches such as:
-
-- GNINA.
-- smina.
-- QVina variants.
-- Alternative Vina scoring configurations.
-- Machine-learning-based rescoring methods.
-
-These will be treated as separate computational methods and will not replace the current validated Vina workflow unless independently verified.
-
-### Expanded Pose Analysis
-
-The current interaction-analysis workflow focuses on the top-ranked docking pose.
-
-Future development can extend this to:
-
-- Multiple selected poses.
-- Configurable top-N pose analysis.
-- Pose clustering.
-- Interaction-frequency analysis.
-- Residue-level comparison between compounds.
-- Interaction fingerprints.
-- Comparative binding-site analysis.
-
-### Improved Ranking
-
-Future ranking can combine multiple computational signals rather than relying on docking score alone.
-
-Potential ranking features include:
-
-- ADMET screening status.
-- Physicochemical properties.
-- SCScore.
-- Docking score.
-- Interaction count.
-- Interaction type.
-- Contacted binding-site residues.
-- Pose consistency.
-
-Any combined ranking methodology should remain explicitly documented so that the resulting prioritization is reproducible and interpretable.
-
-### Reporting and Visualization
-
-Future versions can provide automated reports containing:
-
-- Compound summaries.
-- ADMET summaries.
-- Docking rankings.
-- Interaction fingerprints.
-- Binding-site residue summaries.
-- Configuration information.
-- Experiment history.
-- Quality-control information.
-
-Additional visualization may include docking-score distributions, interaction maps, compound-property plots, and comparative screening summaries.
-
-### Query and Export Tools
-
-The SQLite database provides a foundation for future analytical queries and automated exports.
-
-Potential additions include:
-
-- Command-line result queries.
-- Filtered CSV exports.
-- Excel reports.
-- Summary dashboards.
-- Experiment comparison reports.
-- Compound history reports.
-- Target-specific screening reports.
-
-### Scalability and Compute Optimization
-
-Future work can investigate:
-
-- Parallel docking execution.
-- GPU-enabled computational methods where supported.
-- Batch scheduling.
-- Larger compound libraries.
-- Resource-aware execution.
-- Checkpointing and resumable workflows.
-
-The actual computational capacity will depend on the available hardware and the requirements of the selected software and models.
-
-### Experimental Validation Integration
-
-The long-term objective is to make computational prioritization easier to connect with experimental evidence.
-
-Future database extensions could store externally generated validation information such as:
-
-- Experimental binding measurements.
-- Assay results.
-- Biological activity measurements.
-- Literature evidence.
-- Validation status.
-
-Such information would remain clearly distinguished from computational predictions.
-
-### Reproducible Method Expansion
-
-Any new computational method should be recorded with its relevant:
-
-- Software name.
-- Software version.
-- Model version.
-- Input structure.
-- Configuration.
-- Parameters.
-- Execution status.
-- Output.
-- Experiment identity.
-
-This preserves the central principle of the project: computational results should remain traceable to the exact method and inputs that produced them.
-## License
-
-This project is released under the MIT License.
-
-The MIT License permits reuse, modification, distribution, and use of the software, subject to the conditions specified in the license.
-
-See the `LICENSE` file in the repository for the complete license text.
-
-### Scientific Software and External Components
-
-This project integrates or uses several open-source scientific software packages and external resources.
-
-These components remain subject to their respective licenses and terms of use.
-
-Examples include:
-
-- RDKit
-- AutoDock Vina
-- Meeko
-- Open Babel
-- ProLIF
-- MDAnalysis
-- ADMET-AI
-- SCScore
-- PubChem resources
-
-Users should consult the respective upstream projects for their licensing, citation, and usage requirements.
-
-### Data and Scientific Results
-
-Molecular structures, computational predictions, docking results, and interaction-analysis results generated by this project should be interpreted according to the scientific limitations described in this README.
-
-Computational results are provided for research, educational, and portfolio purposes and should not be interpreted as experimental or clinical evidence.
-
-### Citation
-
-If this project or its methodology is used in research or derivative work, users should cite the relevant upstream scientific software, models, databases, and methods in addition to referencing this repository.
-## Project Status
-
-The core computational workflow is currently implemented and demonstrated on a small compound set.
-
-### Currently Implemented
-
-- Compound registration and persistent compound identity.
-- Molecular property calculation using RDKit.
-- Lipinski-style property evaluation.
-- SCScore calculation using the integrated local SCScore implementation.
-- ADMET prediction using ADMET-AI.
-- Project-defined ADMET screening categories.
-- Docking eligibility tracking.
-- Manual compound selection for computational screening.
-- 3D ligand preparation using RDKit.
-- Docking-ready ligand preparation using Meeko.
-- Protein preparation for docking.
-- Configurable AutoDock Vina docking.
-- Persistent docking experiment records.
-- Docking pose and score storage.
-- ProLIF-based interaction analysis.
-- Interaction-result storage in SQLite.
-- Integrated screening-result reporting.
-- Current docking and screening CSV exports.
-- Reproducible configuration tracking using configuration identity and experiment records.
-
-### Current Demonstration
-
-The current validated demonstration contains:
-
-- 9 registered compounds.
-- 936 ADMET endpoint results.
-- 2 compounds currently eligible for docking.
-- 2 completed docking experiments.
-- 20 total docking poses.
-- 2 top poses analyzed using ProLIF.
-- 17 recorded interaction events.
-- Persistent results stored in SQLite.
-
-### Development Stage
-
-The project is currently a functional computational research and portfolio prototype rather than a production pharmaceutical screening platform.
-
-The architecture is intentionally designed so that additional compounds, targets, computational methods, and analysis stages can be incorporated without replacing the existing experiment-tracking system.
-
-Further development will focus on automation, larger-scale screening, expanded interaction analysis, additional computational methods, reporting, and validation-oriented workflows.
-## Author
-
-**Sk. Adil Siraj**
-
-This project was developed as a computational biology and drug-discovery portfolio project to demonstrate the practical integration of:
-
-- Molecular informatics
-- Bioinformatics
-- Cheminformatics
-- ADMET prediction
-- Structure-based virtual screening
-- Molecular docking
-- Protein–ligand interaction analysis
-- Python-based scientific software development
-- SQLite-based experiment tracking
-- Reproducible computational workflows
-
-The project reflects an implementation-focused approach to applying computational methods to biological and pharmaceutical research problems.
-
-### Repository
-
-GitHub:
-
-    https://github.com/Adil07x/automated-drug-screening-pipeline
-
-The repository is named `automated-drug-screening-pipeline`.
-
-### Portfolio
-
-    https://adil07x.github.io/
-
-The portfolio provides additional information about the author's computational biology, data analysis, programming, and research-oriented projects.
-## Disclaimer
-
-This project is intended for computational research, education, and demonstration of reproducible scientific software development.
-
-The computational predictions generated by this pipeline should not be interpreted as:
-
-- Experimental confirmation of molecular binding.
-- Proof of biological activity.
-- Clinical evidence.
-- Drug-safety assessment.
-- Therapeutic efficacy.
-- Regulatory approval or recommendation.
-
-Docking scores, ADMET predictions, physicochemical properties, SCScore values, and protein–ligand interaction predictions are computational outputs whose interpretation depends on the underlying models, structures, parameters, and software implementations.
-
-Experimental validation and appropriate scientific review are required before drawing biological or therapeutic conclusions from computational predictions.
-## Contact
-
-For questions, collaboration, or discussion related to the project, please use the contact information available through the author's GitHub and professional portfolio.
-
-### GitHub
-
-    https://github.com/Adil07x
-
-### Portfolio
-
-    https://adil07x.github.io/
-
-The repository contains the source code, configuration, documentation, and reproducible computational workflow for the project.
-## Reproducibility Checklist
-
-Before considering a screening run complete, the following items should be identifiable and traceable.
-
-### Input Verification
-
-- [ ] Target protein structure is identified.
-- [ ] Protein chain used for docking is identified.
-- [ ] Compound identity is stored in the database.
-- [ ] Molecular structure or SMILES is available.
-- [ ] External compound identifier is recorded when available.
-- [ ] Docking site and configuration are defined.
-
-### Computational Method Verification
-
-- [ ] Molecular-property calculation completed.
-- [ ] SCScore calculation completed where applicable.
-- [ ] ADMET prediction completed where applicable.
-- [ ] Screening decision recorded.
-- [ ] Docking eligibility recorded.
-- [ ] Ligand preparation completed successfully.
-- [ ] Protein preparation completed successfully.
-- [ ] Docking completed successfully.
-- [ ] Docking poses and scores are available.
-- [ ] Interaction analysis completed for selected poses.
-
-### Experiment Tracking
-
-- [ ] Software and model versions are recorded where applicable.
-- [ ] Docking configuration is identified.
-- [ ] Configuration identity is preserved.
-- [ ] Experiment identity is stored in SQLite.
-- [ ] Results are associated with the correct target and ligand.
-- [ ] Changed computational parameters create distinguishable experiment records.
-
-### Result Verification
-
-- [ ] SQLite contains the persistent result.
-- [ ] Current CSV reports were generated from the current results.
-- [ ] Historical results are not accidentally mixed with the current run.
-- [ ] Computational scores are interpreted as predictions rather than experimental measurements.
-- [ ] Any manually selected compound has an appropriate selection rationale.
-
-### Publication and Repository Hygiene
-
-- [ ] Sensitive or private information is excluded.
-- [ ] Large local-only model/data payloads are excluded where appropriate.
-- [ ] Temporary files and caches are excluded.
-- [ ] Reproducible configuration files are included.
-- [ ] Required scripts are included.
-- [ ] Documentation describes the actual implemented workflow.
-- [ ] Claims about software or methods are limited to components that have been verified in the project.
-## Contributing
-
-Contributions that improve the scientific reproducibility, computational reliability, documentation, or usability of the project are welcome.
-
-### Areas for Contribution
-
-Potential areas include:
-
-- Improving pipeline automation.
-- Adding validated computational methods.
-- Improving database queries and reporting.
-- Extending ADMET analysis.
-- Improving docking workflows.
-- Expanding interaction analysis.
-- Adding reproducibility checks.
-- Improving error handling and logging.
-- Adding tests for individual pipeline components.
-- Improving documentation.
-- Improving computational efficiency.
-
-### Contribution Principles
-
-Contributions should:
-
-- Clearly describe the change being introduced.
-- Preserve reproducibility where possible.
-- Document important computational parameters.
-- Identify software or model versions when relevant.
-- Avoid presenting unvalidated computational methods as experimentally established.
-- Avoid committing unnecessary large generated files or local development artifacts.
-- Preserve the distinction between current implementation and future experimental features.
-
-### Scientific Method Changes
-
-When introducing a new prediction or analysis method, the implementation should document:
-
-- Method or software name.
-- Version.
-- Model, when applicable.
-- Input requirements.
-- Configuration parameters.
-- Output format.
-- How results are stored.
-- How the method affects experiment identity and reproducibility.
-
-### Reporting Issues
-
-When reporting a problem, include enough information to reproduce it where possible, such as:
-
-- Operating system or WSL environment.
-- Conda environment.
-- Python version.
-- Relevant software versions.
-- Command executed.
-- Error message.
-- Relevant configuration.
-- Input type.
-- Expected behaviour.
-- Observed behaviour.
-## References and Resources
-
-The project builds on established open-source scientific software, databases, and computational methods.
-
-### Molecular and Chemical Informatics
-
-- RDKit
-- PubChem
-- Open Babel
-
-### Synthetic Complexity
-
-- SCScore
-
-### ADMET Prediction
-
-- ADMET-AI
-
-### Molecular Docking
-
-- AutoDock Vina
-- Meeko
-
-### Protein–Ligand Interaction Analysis
-
-- ProLIF
-- MDAnalysis
-
-### Data and Reproducibility
-
-- SQLite
-- Python
-- Conda
-- Git
-- GitHub
-
-Users reproducing or extending this project should consult the official documentation and scientific publications associated with each software package, model, and database.
-
-Where appropriate, derived research outputs should cite the original methods, software, models, and public data sources rather than treating this repository as the original source of those underlying technologies.
-
-### Reproducibility Principle
-
-The project aims to make computational results traceable to:
-
-    Input Structure
-          |
-          v
-    Software / Model
-          |
-          v
-    Configuration
-          |
-          v
-    Experiment
-          |
-          v
-    Computational Result
-
-This allows future analyses to distinguish between results generated by different inputs, software versions, models, configurations, and experimental records.
+This project is for computational research, education and demonstration of reproducible scientific software. Its outputs must not be interpreted as experimental confirmation of binding, proof of biological activity, clinical evidence, drug-safety assessment, therapeutic efficacy, or regulatory approval or recommendation. Docking scores, ADMET predictions, physicochemical properties, SCScore values and interaction predictions depend on the underlying models, structures, parameters and software. Experimental validation and appropriate scientific review are required before drawing biological or therapeutic conclusions.
